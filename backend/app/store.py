@@ -4,10 +4,11 @@
 """
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 from typing import Any
 
-from app.seed import SEED_ROWS
+from app.seed import SEED_DIM_HISTORY, SEED_ROWS
 
 
 class Store:
@@ -29,6 +30,17 @@ class Store:
         self._archive_records: list[dict[str, Any]] = []
         # 补数区间记录
         self._backfill_partitions: dict[str, list[dict[str, Any]]] = {}
+        # 维度历史（SCD2）: 维度模型编号 -> [版本记录]
+        self._dim_history: dict[str, list[dict[str, Any]]] = {
+            code: [dict(row) for row in rows] for code, rows in SEED_DIM_HISTORY.items()
+        }
+        # DWS时点汇总结果: 汇总表id -> {汇总窗口: 完整版本结果}
+        # 同一汇总窗口只保留一个完整版本，新版本整体覆盖旧版本。
+        self._dws_pit_results: dict[int, dict[str, dict[str, Any]]] = {}
+        # 时点汇总并发锁: 汇总表id -> Lock（并发生成时串行，保证只落一个完整版本）
+        self._dws_pit_locks: dict[int, threading.Lock] = {}
+        # 迟到维度更正处理流水: 汇总表id -> [处理记录]
+        self._late_dim_handlings: dict[int, list[dict[str, Any]]] = {}
 
     def module_names(self) -> list[str]:
         return sorted(self._tables)
@@ -165,6 +177,39 @@ class Store:
 
     def get_backfill_partitions(self, job_id: str) -> list[dict[str, Any]]:
         return list(self._backfill_partitions.get(job_id, []))
+
+    # ---- 维度历史（SCD2） ----
+
+    def dim_history(self, dim_code: str) -> list[dict[str, Any]]:
+        return self._dim_history.setdefault(dim_code, [])
+
+    def add_dim_history_version(self, dim_code: str, version: dict[str, Any]) -> None:
+        self._dim_history.setdefault(dim_code, []).append(version)
+
+    def remove_dim_history_version(self, dim_code: str, version: dict[str, Any]) -> None:
+        history = self._dim_history.setdefault(dim_code, [])
+        if version in history:
+            history.remove(version)
+
+    # ---- DWS时点汇总 ----
+
+    def pit_lock(self, entry_id: int) -> threading.Lock:
+        return self._dws_pit_locks.setdefault(entry_id, threading.Lock())
+
+    def save_pit_result(self, entry_id: int, window: str, result: dict[str, Any]) -> None:
+        """同一汇总窗口只保留一个完整版本：整体覆盖写。"""
+        self._dws_pit_results.setdefault(entry_id, {})[window] = result
+
+    def get_pit_results(self, entry_id: int) -> dict[str, dict[str, Any]]:
+        return dict(self._dws_pit_results.get(entry_id, {}))
+
+    # ---- 迟到维度更正处理流水 ----
+
+    def add_late_handling(self, entry_id: int, record: dict[str, Any]) -> None:
+        self._late_dim_handlings.setdefault(entry_id, []).append(record)
+
+    def get_late_handlings(self, entry_id: int) -> list[dict[str, Any]]:
+        return list(self._late_dim_handlings.get(entry_id, []))
 
 
 store = Store()

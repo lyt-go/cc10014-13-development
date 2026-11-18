@@ -3,16 +3,18 @@ from __future__ import annotations
 
 import csv
 import io
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
-from app.services.dws_layer import DwsLayerService
+from app.services.dws_layer import DwsLayerService, DwsPitService
 
 router = APIRouter(prefix="/api/dws_layer", tags=["汇总层管理"])
 
 service = DwsLayerService()
+pit_service = DwsPitService()
 
 LIST_FIELDS = ["表编号", "统计粒度", "汇总维度", "度量字段", "聚合函数", "时间范围", "刷新周期", "创建批次"]
 STATUSES = ["草稿", "待校验", "已上线", "已下线"]
@@ -107,3 +109,37 @@ def get_table_data(entry_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"汇总表 {entry_id} 不存在")
     data = service.get_table_data(entry.get("表名称", ""))
     return {"items": data}
+
+
+@router.post("/{entry_id}/pit_aggregate")
+def pit_aggregate(entry_id: int) -> dict[str, Any]:
+    """按业务时点关联DWD明细与维度历史，生成DWS时点汇总表。
+
+    业务时点、维度生效区间和汇总窗口必须一致；关联错版本（同一明细命中两个
+    维度键）或聚合结果越出阈值上下限时，拒绝保存。
+    """
+    return pit_service.generate(entry_id)
+
+
+@router.get("/{entry_id}/pit_result")
+def pit_result(entry_id: int) -> dict[str, Any]:
+    """读取该汇总表已发布的时点汇总结果（生效维度键+统计窗口数据）。"""
+    return pit_service.get_pit_result(entry_id)
+
+
+@router.get("/{entry_id}/pit_verify")
+def pit_verify(entry_id: int) -> dict[str, Any]:
+    """逐项核对：每个明细只命中一个维度键，历史窗口与维度生效区间逐项可核对。"""
+    return pit_service.verify(entry_id)
+
+
+@router.post("/{entry_id}/late_dim_correction")
+def late_dim_correction(entry_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    """迟到维度更正：与已发布业务窗口重叠时按「迟到接管」或「保留原窗口」处理。"""
+    return pit_service.late_dim_correction(entry_id, payload)
+
+
+@router.get("/{entry_id}/late_dim_handlings")
+def late_dim_handlings(entry_id: int) -> dict[str, Any]:
+    """比较迟到更正两种处理的先后；谁优先尚无结论，当前按处理时间后者优先。"""
+    return pit_service.compare_handlings(entry_id)

@@ -90,3 +90,12 @@ def run_action(entry_id: int, payload: ActionPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
+
+
+@router.get("/{entry_id}/dws_pit_results")
+def dws_pit_results(entry_id: int) -> dict:
+    """跨模块读取DWS时点汇总表结果：规则与阈值顺着汇总层管理调用链查找。"""
+    result = service.get_dws_pit_results(entry_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("message", "维度模型不存在"))
+    return result

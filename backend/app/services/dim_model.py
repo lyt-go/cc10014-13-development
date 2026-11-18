@@ -100,3 +100,32 @@ class DimModelService:
         dim_table = f"dim_{dim_name.replace('维度', '').strip()}"
         store.set_table_rows(dim_table, dim_rows)
         return {"ok": True, "message": f"维度表 {dim_table} 已生成，共{len(dim_rows)}行", "rows": dim_rows}
+
+    def get_dws_pit_results(self, entry_id: int) -> dict[str, Any]:
+        """跨模块读取DWS时点汇总表：顺着汇总层管理调用链查找汇总表结果与规则阈值。"""
+        entry = self.get_entry(entry_id)
+        if not entry:
+            return {"ok": False, "message": "维度模型不存在"}
+        dim_code = entry.get("模型编号", "")
+        from app.services.dws_layer import DwsPitService
+        pit = DwsPitService()
+        items: list[dict[str, Any]] = []
+        for dws in store.rows("dws_layer"):
+            if dws.get("维度模型") != dim_code:
+                continue
+            pit_result = pit.get_pit_result(int(dws["id"]))
+            items.append({
+                "汇总表": dws.get("表编号", ""),
+                "表名称": dws.get("表名称", ""),
+                "规则阈值": {
+                    "阈值下界": dws.get("阈值下界", ""),
+                    "阈值上界": dws.get("阈值上界", ""),
+                    "条件标准": dws.get("条件标准", ""),
+                },
+                "时点汇总结果": pit_result.get("窗口结果", {}),
+            })
+        return {"ok": True,
+                "维度模型": dim_code,
+                "维度名称": entry.get("维度名称", ""),
+                "汇总结果": items,
+                "message": f"维度模型 {dim_code} 关联 {len(items)} 张DWS时点汇总表"}
